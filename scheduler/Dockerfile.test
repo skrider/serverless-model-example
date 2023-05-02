@@ -1,0 +1,17 @@
+# Use the official Go image as a base image
+FROM golang:1.17
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy go.mod and go.sum files into the container
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy the rest of the source code into the container
+COPY . .
+
+# Run tests
+CMD ["go", "test", "-v", "./..."]
