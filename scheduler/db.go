@@ -15,31 +15,31 @@ var db *sql.DB
 var once sync.Once
 
 func GetDB() *sql.DB {
-    once.Do(func() {
-        var err error
+	once.Do(func() {
+		var err error
 
-        db, err = connect()
-        if err != nil {
-            panic(err)
-        }
+		db, err = connect()
+		if err != nil {
+			panic(err)
+		}
 
-        err = prepare(db)
-        if err != nil {
-            panic(err)
-        }
+		err = prepare(db)
+		if err != nil {
+			panic(err)
+		}
 
-        for i := 0; i < 30; i++ {
-            err := db.Ping()
-            if err == nil {
-                break
-            }
-            time.Sleep(time.Second)
-        }
-    })
-    if db == nil {
-        panic("db is nil")
-    }
-    return db
+		for i := 0; i < 30; i++ {
+			err := db.Ping()
+			if err == nil {
+				break
+			}
+			time.Sleep(time.Second)
+		}
+	})
+	if db == nil {
+		panic("db is nil")
+	}
+	return db
 }
 
 func connect() (*sql.DB, error) {
@@ -67,4 +67,3 @@ func prepare(db *sql.DB) error {
 	}
 	return nil
 }
-

@@ -9,7 +9,7 @@ import (
 )
 
 func TestStartStopReplica(t *testing.T) {
-    t.Parallel()
+	t.Parallel()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
@@ -28,7 +28,7 @@ func TestStartStopReplica(t *testing.T) {
 }
 
 func TestReplicaOk(t *testing.T) {
-    t.Parallel()
+	t.Parallel()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
@@ -56,22 +56,22 @@ func TestReplicaOk(t *testing.T) {
 }
 
 func TestReplicaPredict(t *testing.T) {
-    t.Parallel()
-    startTime := time.Now()
+	t.Parallel()
+	startTime := time.Now()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
 	ctx := context.Background()
 
-    println("creating replica", time.Since(startTime).Milliseconds())
+	println("creating replica", time.Since(startTime).Milliseconds())
 
 	rep, err := NewReplica(cli, ctx, 3)
 	if err != nil {
 		t.Error(err)
 	}
 
-    println("waiting for ok", time.Since(startTime).Milliseconds())
+	println("waiting for ok", time.Since(startTime).Milliseconds())
 	for true {
 		ok, _ := rep.Ok()
 		time.Sleep(500 * time.Millisecond)
@@ -86,11 +86,11 @@ func TestReplicaPredict(t *testing.T) {
 		t.Error(err)
 	}
 	println(output)
-    println("predicted", time.Since(startTime).Milliseconds())
-    println("cleaning up")
+	println("predicted", time.Since(startTime).Milliseconds())
+	println("cleaning up")
 	err = rep.Cleanup(cli, ctx)
 	if err != nil {
 		t.Error(err)
 	}
-    println("done", time.Since(startTime).Milliseconds())
+	println("done", time.Since(startTime).Milliseconds())
 }

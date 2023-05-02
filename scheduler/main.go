@@ -14,7 +14,7 @@ func main() {
 
 func blogHandler(w http.ResponseWriter, r *http.Request) {
 	db := GetDB()
-    print("got db")
+	print("got db")
 
 	rows, err := db.Query("SELECT title FROM blog")
 	if err != nil {
