@@ -15,7 +15,7 @@ COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod/cache \
     --mount=type=cache,target=/go-build \
-    go build -o bin/backend main.go
+    go build -o bin/backend .
 
 CMD ["/code/bin/backend"]
 
