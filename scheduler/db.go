@@ -13,7 +13,6 @@ import (
 
 var db *sql.DB
 var once sync.Once
-var mutex sync.Mutex
 
 func GetDB() *sql.DB {
     once.Do(func() {
