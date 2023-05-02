@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
@@ -15,10 +17,21 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
+type ReplicaStatus int
+
+const (
+	ReplicaStarting ReplicaStatus = iota
+	ReplicaRunning
+	ReplicaIdle
+	ReplicaError
+)
+
 type Replica struct {
-	ID   string
-	Name string
-	IP   string
+	ID          string
+	Name        string
+	IP          string
+	Status      ReplicaStatus
+	timeStarted time.Time
 }
 
 type ReplicaRequest struct {
@@ -69,9 +82,11 @@ func NewReplica(cli *client.Client, ctx context.Context, index int) (*Replica, e
 
 	containerIP := containerInfo.NetworkSettings.Networks[replicaNetworkName].IPAddress
 	replica := &Replica{
-		ID:   containerResponse.ID,
-		Name: containerName,
-		IP:   containerIP,
+		ID:          containerResponse.ID,
+		Name:        containerName,
+		IP:          containerIP,
+		Status:      ReplicaStarting,
+		timeStarted: time.Now(),
 	}
 
 	return replica, err
@@ -91,9 +106,29 @@ func (r *Replica) Ok() (bool, error) {
 	}
 
 	if string(body) == "ok" {
+		r.Status = ReplicaIdle
+		r.timeStarted = time.Now()
 		return true, nil
 	}
 	return false, nil
+}
+
+func (r *Replica) WaitUntilSetup() error {
+	for i := 0; i < 100; i++ {
+		ok, _ := r.Ok()
+		time.Sleep(500 * time.Millisecond)
+		if ok {
+			return nil
+		}
+	}
+	return errors.New("replica not ready")
+}
+
+func (r *Replica) TimeToReady() time.Duration {
+	if r.Status == ReplicaIdle {
+		return time.Duration(0)
+	}
+	return time.Now().Sub(r.timeStarted)
 }
 
 func (r *Replica) Predict(input string) (string, error) {

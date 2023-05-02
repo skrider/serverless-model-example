@@ -29,3 +29,8 @@ func blogHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(titles)
 }
+
+func handlePush(w http.ResponseWriter, r *http.Request) {
+	//
+
+}
