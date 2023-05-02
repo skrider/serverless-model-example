@@ -1,11 +1,9 @@
 services:
-  model: 
+  model-manual: 
     build:
       context: model 
       target: builder
-    # flask requires SIGINT to stop gracefully
-    # (default stop signal from Compose is SIGTERM)
-    stop_signal: SIGINT
+    stop_signal: "SIGINT"
   scheduler:
     build:
       context: scheduler
@@ -18,6 +16,8 @@ services:
       - db
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - APP_REPLICA_IMAGE=docker.io/library/serverless-model-example-model-manual
   db:
     image: postgres
     restart: always
@@ -37,13 +37,13 @@ services:
       timeout: 5s
       retries: 5
   test_scheduler:
-      build:
-        context: scheduler
-        dockerfile: Dockerfile.test
-      environment:
-        - APP_WORKER_IMAGE=ubuntu
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
+    build:
+      context: scheduler
+      dockerfile: Dockerfile.test
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - APP_REPLICA_IMAGE=docker.io/library/serverless-model-example-model-manual
 volumes:
   db-data:
 secrets:
