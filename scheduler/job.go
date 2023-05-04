@@ -28,7 +28,7 @@ func MakeJob(input string) *Job {
 		Input:    input,
 		ID:       UUID(),
 		Status:   JobPending,
-		Duration: DEFAULT_JOB_DURATION,
+		Duration: JobDuration.GetTime(),
 		start:    time.Now(),
 	}
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"strconv"
@@ -19,29 +21,31 @@ var replicas []*Replica  // contains all replicas, including deprovisioned repli
 var jobs map[string]*Job // contains all jobs
 var jobQueue chan *Job   // channel for passing jobs from request handler goroutines to background job manager
 var cli *client.Client   // docker client
-var DEFAULT_JOB_DURATION time.Duration
-var DEFAULT_SETUP_TIME time.Duration
+
+var JobDuration *MovingAverageDuration
+var SetupDuration *MovingAverageDuration
 
 func init() {
 	var err error
-
 	// populate constants from environment
 	// have to do it in init() so they are available during testing
 	jobDuration, err := strconv.Atoi(os.Getenv("MODEL_PREDICT_TIME"))
 	if err != nil {
 		panic(err)
 	}
-	DEFAULT_JOB_DURATION = time.Duration(jobDuration) * time.Second
+	JobDuration = MakeMovingAverageDuration(time.Duration(jobDuration) * time.Second)
 
 	setupDuration, err := strconv.Atoi(os.Getenv("MODEL_SETUP_TIME"))
 	if err != nil {
 		panic(err)
 	}
-	DEFAULT_SETUP_TIME = time.Duration(setupDuration)*time.Second + DOCKER_OVERHEAD
+	SetupDuration = MakeMovingAverageDuration(time.Duration(setupDuration)*time.Second + DOCKER_OVERHEAD)
 }
 
 func main() {
 	var err error
+
+	rand.Seed(time.Now().UnixNano())
 
 	jobQueue = make(chan *Job, 100)
 	jobs = make(map[string]*Job)
@@ -55,12 +59,15 @@ func main() {
 		panic(err)
 	}
 
+	// start the background persistence worker for backing up jobs
+	go backgroundPersistenceWorker()
+
 	// start the background job worker for managing jobs and replicas
 	go backgroundJobWorker()
 
 	log.Print("[main] Listening on port 8000")
-    log.Printf("[main] Setup time:    %d", DEFAULT_SETUP_TIME)
-    log.Printf("[main] Handling time: %d", DEFAULT_JOB_DURATION)
+	log.Printf("[main] Setup time:    %d", SetupDuration.GetTime())
+	log.Printf("[main] Handling time: %d", JobDuration.GetTime())
 
 	http.HandleFunc("/push", pushHandler)
 	http.HandleFunc("/status/", statusHandler)
@@ -87,7 +94,7 @@ func backgroundJobWorker() {
 
 		// if the soonest-available replica will take longer to be available then
 		// setting up a  new replica, then spin up a new replica
-		if min > DEFAULT_SETUP_TIME {
+		if min > SetupDuration.GetTime() {
 			log.Printf("[main] job %s: spinning up a new replica", job.ID)
 			rep := NewReplica()
 			replicas = append(replicas, rep)
@@ -130,6 +137,49 @@ func backgroundReplicaWorker(rep *Replica) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func backgroundPersistenceWorker() {
+	// load state from disk
+	filepath := os.Getenv("STATE_FILE")
+	if filepath == "" {
+		log.Printf("[main] No state file specified, not loading state from disk")
+		return
+	}
+	log.Printf("[main] Loading state from disk")
+	file, err := os.Open(filepath)
+	if err != nil {
+		log.Printf("[main] Error opening file: %v\n", err)
+	}
+
+	decoder := gob.NewDecoder(file)
+	err = decoder.Decode(&jobs)
+	if err != nil {
+		log.Printf("[main] Error decoding map: %v\n", err)
+	}
+
+	file.Close()
+	for {
+		time.Sleep(10 * time.Second)
+		log.Printf("[main] Persisting state to disk")
+		file, err := os.Create(filepath)
+		if err != nil {
+			log.Printf("[main] Error creating file: %v\n", err)
+			return
+		}
+		defer file.Close()
+
+		// Create a gob encoder
+		encoder := gob.NewEncoder(file)
+
+		// Serialize the map to the file
+		err = encoder.Encode(jobs)
+		if err != nil {
+			log.Printf("[main] Error encoding map: %v\n", err)
+			return
+		}
+	}
+
 }
 
 func pushHandler(w http.ResponseWriter, r *http.Request) {

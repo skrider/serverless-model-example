@@ -16,10 +16,12 @@ services:
       - db
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - scheduler-state:/state
     environment:
       - APP_REPLICA_IMAGE=docker.io/library/serverless-model-example-model-manual
       - MODEL_SETUP_TIME=10
       - MODEL_PREDICT_TIME=3
+      - STATE_FILE=/state/jobs.gob
   db:
     image: postgres
     restart: always
@@ -50,6 +52,7 @@ services:
       - MODEL_PREDICT_TIME=3
 volumes:
   db-data:
+  scheduler-state:
 secrets:
   db-password:
     file: password.txt

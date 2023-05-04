@@ -32,9 +32,9 @@ func TestStartStopReplica(t *testing.T) {
 	if err == nil {
 		t.Error("rep is still ok")
 	}
-    if rep.Status() != ReplicaTerminated {
-        t.Error("rep is not terminated")
-    }
+	if rep.Status() != ReplicaTerminated {
+		t.Error("rep is not terminated")
+	}
 }
 
 func TestReplicaPredict(t *testing.T) {
@@ -85,7 +85,7 @@ func TestReplicaPredictAsync(t *testing.T) {
 	}
 	ctx := context.Background()
 
-    job1 := MakeJob("test 3")
+	job1 := MakeJob("test 3")
 	job2 := MakeJob("test 4")
 
 	rep := NewReplica()
