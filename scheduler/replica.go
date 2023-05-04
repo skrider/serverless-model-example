@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -144,20 +145,20 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 		},
 	}
 
-	log.Printf("creating replica container %s", r.Name)
+	log.Printf("[%s] creating replica container", r.Name)
 	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.Name)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("starting replica container %s", r.Name)
+	log.Printf("[%s] starting replica container", r.Name)
 	err = cli.ContainerStart(ctx, containerResponse.ID, types.ContainerStartOptions{})
 	if err != nil {
 		cli.ContainerRemove(ctx, containerResponse.ID, types.ContainerRemoveOptions{})
 		return err
 	}
 
-	log.Printf("resolving address for %s", r.Name)
+	log.Printf("[%s] resolving address", r.Name)
 	containerInfo, err := cli.ContainerInspect(ctx, containerResponse.ID)
 	if err != nil {
 		return err
@@ -166,7 +167,7 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 	r.ip = containerInfo.NetworkSettings.Networks[replicaNetworkName].IPAddress
 	r.id = containerResponse.ID
 
-	log.Printf("pinging %s", r.Name)
+	log.Printf("[%s] pinging (waiting for model setup)", r.Name)
 	for i := 0; i < 100; i++ {
 		err := r.ok()
 		time.Sleep(500 * time.Millisecond)
@@ -217,10 +218,18 @@ func (r *Replica) predict(input string) (string, error) {
 		return "", err
 	}
 
-	return string(body), nil
+    // parse body as json
+    var data map[string]interface{}
+    err = json.Unmarshal(body, &data)
+    if err != nil {
+        return "", err
+    }
+
+	return data["output"].(string), nil
 }
 
 func (r *Replica) Cleanup(cli *client.Client, ctx context.Context) error {
+    log.Printf("[%s] stopping replica container", r.Name)
 	stopOptions := container.StopOptions{}
 
 	err := cli.ContainerStop(ctx, r.id, stopOptions)
@@ -228,6 +237,7 @@ func (r *Replica) Cleanup(cli *client.Client, ctx context.Context) error {
 		return err
 	}
 
+    log.Printf("[%s] removing replica container", r.Name)
 	err = cli.ContainerRemove(ctx, r.id, types.ContainerRemoveOptions{})
 	return err
 }
