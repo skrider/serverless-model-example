@@ -6,35 +6,52 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"time"
 
 	"github.com/docker/docker/client"
 )
 
-var replicas []*Replica
-var jobs map[string]*Job
-var globalJobQueue chan *Job
+const DOCKER_OVERHEAD time.Duration = 2 * time.Second // additional time that Docker takes to set up a replica
 
-var cli *client.Client
-
-
-func init() {
-}
+var replicas []*Replica  // contains all replicas, including deprovisioned replicas
+var jobs map[string]*Job // contains all jobs
+var jobQueue chan *Job   // channel for passing jobs from request handler goroutines to background job manager
+var cli *client.Client   // docker client
+var DEFAULT_JOB_DURATION time.Duration
+var DEFAULT_SETUP_TIME time.Duration
 
 func main() {
-    globalJobQueue = make(chan *Job, 100)
-    jobs = make(map[string]*Job)
-    replicas = make([]*Replica, 0)
+	var err error
 
-    // add a sentinel replica that never gets used
-    replicas = append(replicas, NewReplica())
+	// populate constants from environment
+	jobDuration, err := strconv.Atoi(os.Getenv("MODEL_PREDICT_TIME"))
+	if err != nil {
+		panic(err)
+	}
+	DEFAULT_JOB_DURATION = time.Duration(jobDuration) * time.Second
 
-    var err error
+	setupDuration, err := strconv.Atoi(os.Getenv("MODEL_SETUP_TIME"))
+	if err != nil {
+		panic(err)
+	}
+	DEFAULT_SETUP_TIME = time.Duration(setupDuration)*time.Second + DOCKER_OVERHEAD
+
+	jobQueue = make(chan *Job, 100)
+	jobs = make(map[string]*Job)
+	replicas = make([]*Replica, 0)
+
+	// add a sentinel replica that never gets initialized to make state logic easier
+	replicas = append(replicas, NewReplica())
+
 	cli, err = client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
 
-    go backgroundJobWorker()
+	// start the background job worker for managing jobs and replicas
+	go backgroundJobWorker()
 
 	log.Print("[main] Listening 8000")
 	log.Printf("[main] Setup time %d", DEFAULT_SETUP_TIME)
@@ -47,49 +64,75 @@ func main() {
 }
 
 func backgroundJobWorker() {
-    for {
-        job := <- globalJobQueue
-        log.Printf("[main] Handling job %s", job.ID)
+	for {
+		job := <-jobQueue
+		log.Printf("[main] Handling job %s", job.ID)
 
-        min := replicas[0].TimeToReady()
-        argmin := 0
-        for i, replica := range replicas {
-            currentTime := replica.TimeToReady()
-            if currentTime < min {
-                argmin = i
-                min = currentTime
-            }
-        }
-        log.Printf("[main] job %s:  min: %d, argmin: %d", job.ID, min, argmin)
-        if min > DEFAULT_SETUP_TIME {
-            log.Printf("[main] job %s: spinning up a new replica", job.ID)
-            rep := NewReplica()
-            replicas = append(replicas, rep)
-            go manageReplica(rep)
-            err := rep.EnqueueJob(job)
-            if err != nil {
-                panic(err)
-            }
-        } else {
-            log.Printf("[main] assigning job %s to replica %s", job.ID, replicas[argmin].Name)
-            err := replicas[argmin].EnqueueJob(job)
-            if err != nil {
-                panic(err)
-            }
-        }
-    }
+		// find the soonest-available replica
+		min := replicas[0].TimeToReady()
+		argmin := 0
+		for i, replica := range replicas {
+			currentTime := replica.TimeToReady()
+			if currentTime < min {
+				argmin = i
+				min = currentTime
+			}
+		}
+		log.Printf("[main] job %s:  min: %d, argmin: %d", job.ID, min, argmin)
+
+		// if the soonest-available replica will take longer to be available then
+		// setting up a  new replica, then spin up a new replica
+		if min > DEFAULT_SETUP_TIME {
+			log.Printf("[main] job %s: spinning up a new replica", job.ID)
+			rep := NewReplica()
+			replicas = append(replicas, rep)
+			// start a goroutine to manage the new replica
+			go backgroundReplicaWorker(rep)
+			err := rep.EnqueueJob(job)
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			log.Printf("[main] assigning job %s to replica %s", job.ID, replicas[argmin].Name)
+			err := replicas[argmin].EnqueueJob(job)
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
 
 }
 
-func manageReplica(rep *Replica) {
-    go rep.MonitorReplicaState()
-    ctx := context.Background()
-    err := rep.BeginWork(cli, ctx)
-    if err != nil {
-        panic(err)
-    }
-}
+func backgroundReplicaWorker(rep *Replica) {
+	var err error
+	ctx := context.Background()
 
+	rep.SetStatus(ReplicaStarting)
+	// start the replica
+	err = rep.Setup(cli, ctx)
+	if err != nil {
+		rep.SetStatus(ReplicaError)
+		panic(err)
+	}
+
+	rep.SetStatus(ReplicaRunning)
+	// run until the job queue has been exhausted
+	err = rep.Run()
+	if err != nil {
+		rep.SetStatus(ReplicaError)
+		panic(err)
+	}
+
+	rep.SetStatus(ReplicaStopped)
+	// clean up the replica
+	err = rep.Cleanup(cli, ctx)
+	if err != nil {
+		rep.SetStatus(ReplicaError)
+		panic(err)
+	}
+
+	rep.SetStatus(ReplicaTerminated)
+}
 
 func pushHandler(w http.ResponseWriter, r *http.Request) {
 	// parse job from request
@@ -109,7 +152,7 @@ func pushHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Error parsing request body", http.StatusInternalServerError)
 	}
 
-    log.Printf("[main] Received job: %v", bodyJson)
+	log.Printf("[main] Received job: %v", bodyJson)
 
 	job := &Job{
 		ID:       UUID(),
@@ -118,66 +161,65 @@ func pushHandler(w http.ResponseWriter, r *http.Request) {
 		Duration: DEFAULT_JOB_DURATION,
 	}
 
-    globalJobQueue <- job
+	jobQueue <- job
 
-    jobs[job.ID] = job
+	jobs[job.ID] = job
 
-    // return job id
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{"id": job.ID})
+	// return job id
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"id": job.ID})
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
-    // parse job from request
-    if r.Method != "GET" {
-        http.Error(w, "Method not allowed", 405)
-        return
-    }
+	// parse job from request
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
 
-    // get job id from slug
-    jobID := r.URL.Path[len("/status/"):]
+	// get job id from slug
+	jobID := r.URL.Path[len("/status/"):]
 
-    job, ok := jobs[jobID]
-    if !ok {
-        http.Error(w, "Job not found", http.StatusNotFound)
-        return
-    }
+	job, ok := jobs[jobID]
+	if !ok {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
 
-    // return job status
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{"status": job.GetStatusString()})
+	// return job status
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"status": job.GetStatusString()})
 }
 
 func dataHandler(w http.ResponseWriter, r *http.Request) {
-    // parse job from request
-    if r.Method != "GET" {
-        http.Error(w, "Method not allowed", 405)
-        return
-    }
+	// parse job from request
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
 
-    // get job id from slug
-    jobID := r.URL.Path[len("/data/"):]
+	// get job id from slug
+	jobID := r.URL.Path[len("/data/"):]
 
-    job, ok := jobs[jobID]
-    if !ok {
-        http.Error(w, "Job not found", http.StatusNotFound)
-        return
-    }
+	job, ok := jobs[jobID]
+	if !ok {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
 
-    if job.Status != JobDone {
-        http.Error(w, "Job not finished", http.StatusNotFound)
-        return
-    }
+	if job.Status != JobDone {
+		http.Error(w, "Job not finished", http.StatusNotFound)
+		return
+	}
 
-    // return job status
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(map[string]string{
-        "input": job.Input,
-        "output": job.Output,
-        "latency": job.Latency().String(),
-    })
+	// return job status
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"input":   job.Input,
+		"output":  job.Output,
+		"latency": job.Latency().String(),
+	})
 }
-

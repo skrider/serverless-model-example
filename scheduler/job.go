@@ -4,8 +4,6 @@ import (
 	"time"
 )
 
-const DEFAULT_JOB_DURATION = time.Second * 10
-
 type JobStatus int
 
 const (
@@ -38,16 +36,15 @@ func (j *Job) GetStatusString() string {
 }
 
 func (j *Job) Start() {
-    j.start = time.Now()
-    j.Status = JobRunning
+	j.start = time.Now()
+	j.Status = JobRunning
 }
 
 func (j *Job) Finish() {
-    j.end = time.Now()
-    j.Status = JobDone
+	j.end = time.Now()
+	j.Status = JobDone
 }
 
 func (j *Job) Latency() time.Duration {
-    return j.end.Sub(j.start)
+	return j.end.Sub(j.start)
 }
-

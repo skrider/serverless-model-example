@@ -18,6 +18,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - APP_REPLICA_IMAGE=docker.io/library/serverless-model-example-model-manual
+      - MODEL_SETUP_TIME=10
+      - MODEL_PREDICT_TIME=3
   db:
     image: postgres
     restart: always
@@ -44,6 +46,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - APP_REPLICA_IMAGE=docker.io/library/serverless-model-example-model-manual
+      - MODEL_SETUP_TIME=10
+      - MODEL_PREDICT_TIME=3
 volumes:
   db-data:
 secrets:

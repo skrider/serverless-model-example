@@ -67,4 +67,3 @@ func prepare(db *sql.DB) error {
 	}
 	return nil
 }
-

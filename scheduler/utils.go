@@ -6,6 +6,5 @@ import (
 )
 
 func UUID() string {
-    return fmt.Sprintf("%06d", int(rand.Float64() * 999999))
+	return fmt.Sprintf("%06d", int(rand.Float64()*999999))
 }
-
