@@ -2,59 +2,92 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/client"
 )
 
+func replicaStateMonitor(rep *Replica) {
+    currentStatus := rep.Status()
+    for {
+        switch currentStatus {
+        case ReplicaRunning:
+            // print replica is running as well as the current time
+            fmt.Printf("[%s] %s running\n", time.Now().Format(time.RFC3339), rep.name)
+        case ReplicaStopped:
+            fmt.Printf("[%s] %s stopped\n", time.Now().Format(time.RFC3339), rep.name)
+        case ReplicaError:
+            fmt.Printf("[%s] %s error\n", time.Now().Format(time.RFC3339), rep.name)
+        case ReplicaTerminated:
+            fmt.Printf("[%s] %s terminated\n", time.Now().Format(time.RFC3339), rep.name)
+            return
+        }
+        prevStatus := currentStatus
+        for currentStatus == prevStatus { 
+            currentStatus = rep.Status()
+        }
+    }
+}
+
 func TestStartStopReplica(t *testing.T) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		panic(err)
+		t.Error(err)
 	}
 	ctx := context.Background()
 
-	rep:= NewReplica(1)
-    rep.Setup(cli, ctx)
-	if err != nil {
-		t.Error(err)
-	}
-	println(rep.ID)
-	err = rep.Cleanup(cli, ctx)
-	if err != nil {
-		t.Error(err)
-	}
+	rep := NewReplica()
+
+    // state monitor
+    go replicaStateMonitor(rep)
+
+    err = rep.BeginWork(cli, ctx)
+    if err != nil {
+        t.Error(err)
+    }
+
+    err = rep.ok()
+    if err == nil {
+        t.Error("rep is still ok")
+    }
 }
 
 func TestReplicaPredict(t *testing.T) {
-	startTime := time.Now()
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		panic(err)
+		t.Error(err)
 	}
 	ctx := context.Background()
 
-	println("creating replica", time.Since(startTime).Milliseconds())
 
-	rep := NewReplica(2)
-    err = rep.Setup(cli, ctx)
-	if err != nil {
-		t.Error(err)
-	}
+    job := &Job{
+        Input: "hello",
+        ID: "1",
+        Output: "",
+        Status: JobPending,
+        Duration: time.Second * 2,
+    }
 
-	println("container ok", time.Since(startTime).Milliseconds())
-	println("predicting")
-	output, err := rep.Predict("test")
-	if err != nil {
-		t.Error(err)
-	}
-	println(output)
-	println("predicted", time.Since(startTime).Milliseconds())
-	println("cleaning up")
-	err = rep.Cleanup(cli, ctx)
-	if err != nil {
-		t.Error(err)
-	}
-	println("done", time.Since(startTime).Milliseconds())
+	rep := NewReplica()
+
+    go replicaStateMonitor(rep)
+
+    rep.EnqueueJob(job)
+
+    err = rep.BeginWork(cli, ctx)
+
+    if err != nil {
+        t.Error(err)
+    }
+
+    if job.Output == "" {
+        t.Error("job output is empty")
+    }
+
+    err = rep.ok()
+    if err == nil {
+        t.Error("rep is still ok")
+    }
 }

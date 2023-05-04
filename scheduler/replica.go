@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -17,70 +18,137 @@ import (
 	"github.com/docker/go-connections/nat"
 )
 
+type Replica struct {
+	id                string
+	name              string
+	ip                string
+	setupDuration     time.Duration
+	timeStarted       time.Time
+	jobQueue          chan *Job
+	cumulativeJobTime time.Duration
+	mu                sync.Mutex
+	workOnce          sync.Once
+	status            ReplicaStatus
+}
+
 type ReplicaStatus int
 
 const (
-	ReplicaCreated ReplicaStatus = iota
-	ReplicaStarting 
+	ReplicaInit ReplicaStatus = iota
 	ReplicaRunning
-	ReplicaIdle
+	ReplicaStopped
+	ReplicaTerminated
 	ReplicaError
 )
 
-type Replica struct {
-	ID          string
-	Name        string
-	IP          string
-	Status      ReplicaStatus
-	timeStarted time.Time
+var replicaNetworkName string
+var replicaImage string
+
+var replicaNum int
+var replicaNumMutex sync.Mutex
+
+const defaultSetupTime = 4 * time.Second
+
+func init() {
+	replicaImage = os.Getenv("APP_REPLICA_IMAGE")
+
+	replicaNetworkName = os.Getenv("APP_REPLICA_NETWORK")
+	if replicaNetworkName == "" {
+		replicaNetworkName = "serverless-model-example_default"
+	}
+
+	replicaNum = 0
 }
 
-var ReplicaNetworkName string = "serverless-model-example_default"
-var ReplicaImage string = os.Getenv("APP_REPLICA_IMAGE")
-
-type ReplicaRequest struct {
-	input string
-}
-
-type ReplicaResponse struct {
-	output string
-}
-
-func NewReplica(index int) *Replica {
-	containerName := fmt.Sprintf("replica_%d", index)
+func NewReplica() *Replica {
+	replicaNumMutex.Lock()
+	defer replicaNumMutex.Unlock()
 
 	replica := &Replica{
-		Name:        containerName,
-		Status:      ReplicaCreated,
-		timeStarted: time.Now(),
+		name:              fmt.Sprintf("replica_%d", replicaNum),
+		jobQueue:          make(chan *Job, 100),
+		cumulativeJobTime: 0,
+		status:            ReplicaInit,
+		setupDuration:     defaultSetupTime,
 	}
+	replicaNum += 1
 
 	return replica
 }
 
-func (r *Replica) Ok() (bool, error) {
-	endpoint := fmt.Sprintf("http://%s:8000/ok", r.IP)
-	response, err := http.Get(endpoint)
-	if err != nil {
-		return false, err
-	}
-	defer response.Body.Close()
-
-	body, err := ioutil.ReadAll(response.Body)
-	if err != nil {
-		return false, err
-	}
-
-	if string(body) == "ok" {
-		return true, nil
-	}
-	return false, nil
+func (r *Replica) TimeToReady() time.Duration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cumulativeJobTime + r.setupDuration - time.Since(r.timeStarted)
 }
 
-func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
-    r.timeStarted = time.Now()
+func (r *Replica) Status() ReplicaStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.status
+}
+
+func (r *Replica) EnqueueJob(job *Job) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.jobQueue <- job
+	r.cumulativeJobTime += job.Duration
+	job.Status = JobPending
+}
+
+func (r *Replica) BeginWork(cli *client.Client, ctx context.Context) error {
+	r.mu.Lock()
+    if r.status != ReplicaInit {
+        return errors.New("replica already working")
+    }
+	r.timeStarted = time.Now()
+	r.status = ReplicaRunning
+	r.mu.Unlock()
+
+	err := r.setup(cli, ctx)
+	if err != nil {
+		r.mu.Lock()
+		r.status = ReplicaError
+		r.mu.Unlock()
+        return err
+	}
+
+	for {
+		r.mu.Lock()
+		if len(r.jobQueue) == 0 {
+			break
+		}
+		job := <-r.jobQueue
+		r.mu.Unlock()
+
+		job.Status = JobRunning
+
+		job.Output, err = r.predict(job.Input)
+
+		if err != nil {
+			job.Status = JobError
+		}
+
+		job.Status = JobDone
+	}
+	r.status = ReplicaStopped
+	r.mu.Unlock()
+
+	err = r.cleanup(cli, ctx)
+    if err != nil {
+        return err
+    }
+    r.mu.Lock()
+    r.status = ReplicaTerminated
+    r.mu.Unlock()
+
+    return nil
+}
+
+func (r *Replica) setup(cli *client.Client, ctx context.Context) error {
+	r.timeStarted = time.Now()
 	containerConfig := &container.Config{
-		Image: ReplicaImage,
+		Image: replicaImage,
 		ExposedPorts: nat.PortSet{
 			"8000/tcp": struct{}{},
 		},
@@ -88,11 +156,11 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 	hostConfig := &container.HostConfig{}
 	networkConfig := &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
-			ReplicaNetworkName: {},
+			replicaNetworkName: {},
 		},
 	}
 
-	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.Name)
+	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.name)
 	if err != nil {
 		return err
 	}
@@ -108,13 +176,13 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 		return err
 	}
 
-	r.IP = containerInfo.NetworkSettings.Networks[ReplicaNetworkName].IPAddress
-	r.ID = containerResponse.ID
+	r.ip = containerInfo.NetworkSettings.Networks[replicaNetworkName].IPAddress
+	r.id = containerResponse.ID
 
 	for i := 0; i < 100; i++ {
-		ok, _ := r.Ok()
+		err := r.ok()
 		time.Sleep(500 * time.Millisecond)
-		if ok {
+		if err == nil {
 			return nil
 		}
 	}
@@ -122,38 +190,54 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 	return errors.New("replica setup failed")
 }
 
-func (r *Replica) TimeToReady() time.Duration {
-	if r.Status == ReplicaIdle {
-		return time.Duration(0)
+func (r *Replica) ok() error {
+	endpoint := fmt.Sprintf("http://%s:8000/ok", r.ip)
+	response, err := http.Get(endpoint)
+	if err != nil {
+		return err
 	}
-	return time.Now().Sub(r.timeStarted)
+	defer response.Body.Close()
+
+	body, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return err
+	}
+
+	if string(body) == "ok" {
+		return nil
+	}
+
+	return errors.New("malformed response from replica")
 }
 
-func (r *Replica) Predict(input string) (string, error) {
-    r.timeStarted = time.Now()
-	endpoint := fmt.Sprintf("http://%s:8000", r.IP)
+func (r *Replica) predict(input string) (string, error) {
+	r.timeStarted = time.Now()
+	endpoint := fmt.Sprintf("http://%s:8000", r.ip)
 	reqBody := fmt.Sprintf(`{"input": "%s"}`, input)
+
 	response, err := http.Post(endpoint, "application/json", strings.NewReader(reqBody))
 	if err != nil {
 		return "", err
 	}
+
 	defer response.Body.Close()
 
 	body, err := ioutil.ReadAll(response.Body)
 	if err != nil {
 		return "", err
 	}
+
 	return string(body), nil
 }
 
-func (r *Replica) Cleanup(cli *client.Client, ctx context.Context) error {
+func (r *Replica) cleanup(cli *client.Client, ctx context.Context) error {
 	stopOptions := container.StopOptions{}
 
-	err := cli.ContainerStop(ctx, r.ID, stopOptions)
+	err := cli.ContainerStop(ctx, r.id, stopOptions)
 	if err != nil {
 		return err
 	}
 
-	err = cli.ContainerRemove(ctx, r.ID, types.ContainerRemoveOptions{})
+	err = cli.ContainerRemove(ctx, r.id, types.ContainerRemoveOptions{})
 	return err
 }
