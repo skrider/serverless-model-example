@@ -25,6 +25,8 @@ var cli *client.Client   // docker client
 var JobDuration *MovingAverageDuration
 var SetupDuration *MovingAverageDuration
 
+var timeTolerance time.Duration = 500 * time.Millisecond
+
 func init() {
 	var err error
 	// populate constants from environment
@@ -94,7 +96,9 @@ func backgroundJobWorker() {
 
 		// if the soonest-available replica will take longer to be available then
 		// setting up a  new replica, then spin up a new replica
-		if min > SetupDuration.GetTime() {
+        // add timeTolerance to take into account mismatch between timeToReady and
+        // actual time
+		if min > SetupDuration.GetTime() - timeTolerance {
 			log.Printf("[main] job %s: spinning up a new replica", job.ID)
 			rep := NewReplica()
 			replicas = append(replicas, rep)
