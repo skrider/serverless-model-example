@@ -2,34 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/client"
 )
-
-func replicaStateMonitor(rep *Replica) {
-    currentStatus := rep.Status()
-    for {
-        switch currentStatus {
-        case ReplicaRunning:
-            // print replica is running as well as the current time
-            fmt.Printf("[%s] %s running\n", time.Now().Format(time.RFC3339), rep.name)
-        case ReplicaStopped:
-            fmt.Printf("[%s] %s stopped\n", time.Now().Format(time.RFC3339), rep.name)
-        case ReplicaError:
-            fmt.Printf("[%s] %s error\n", time.Now().Format(time.RFC3339), rep.name)
-        case ReplicaTerminated:
-            fmt.Printf("[%s] %s terminated\n", time.Now().Format(time.RFC3339), rep.name)
-            return
-        }
-        prevStatus := currentStatus
-        for currentStatus == prevStatus { 
-            currentStatus = rep.Status()
-        }
-    }
-}
 
 func TestStartStopReplica(t *testing.T) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
@@ -41,7 +18,7 @@ func TestStartStopReplica(t *testing.T) {
 	rep := NewReplica()
 
     // state monitor
-    go replicaStateMonitor(rep)
+    go rep.MonitorReplicaState()
 
     err = rep.BeginWork(cli, ctx)
     if err != nil {
@@ -72,7 +49,7 @@ func TestReplicaPredict(t *testing.T) {
 
 	rep := NewReplica()
 
-    go replicaStateMonitor(rep)
+    go rep.MonitorReplicaState()
 
     rep.EnqueueJob(job)
 

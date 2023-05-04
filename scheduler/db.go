@@ -52,11 +52,11 @@ func connect() (*sql.DB, error) {
 }
 
 func prepare(db *sql.DB) error {
-	if _, err := db.Exec("DROP TABLE IF EXISTS blog"); err != nil {
+	if _, err := db.Exec("DROP TABLE IF EXISTS jobs"); err != nil {
 		return err
 	}
 
-	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS blog (id SERIAL, title VARCHAR)"); err != nil {
+	if _, err := db.Exec("CREATE TABLE IF NOT EXISTS jobs (id SERIAL, title VARCHAR)"); err != nil {
 		return err
 	}
 
@@ -67,3 +67,4 @@ func prepare(db *sql.DB) error {
 	}
 	return nil
 }
+

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -20,7 +21,7 @@ import (
 
 type Replica struct {
 	id                string
-	name              string
+	Name              string
 	ip                string
 	setupDuration     time.Duration
 	timeStarted       time.Time
@@ -47,7 +48,7 @@ var replicaImage string
 var replicaNum int
 var replicaNumMutex sync.Mutex
 
-const defaultSetupTime = 4 * time.Second
+const DEFAULT_SETUP_TIME = 40 * time.Second
 
 func init() {
 	replicaImage = os.Getenv("APP_REPLICA_IMAGE")
@@ -65,11 +66,11 @@ func NewReplica() *Replica {
 	defer replicaNumMutex.Unlock()
 
 	replica := &Replica{
-		name:              fmt.Sprintf("replica_%d", replicaNum),
+		Name:              fmt.Sprintf("replica_%d", replicaNum),
 		jobQueue:          make(chan *Job, 100),
 		cumulativeJobTime: 0,
 		status:            ReplicaInit,
-		setupDuration:     defaultSetupTime,
+		setupDuration:     DEFAULT_SETUP_TIME,
 	}
 	replicaNum += 1
 
@@ -79,6 +80,9 @@ func NewReplica() *Replica {
 func (r *Replica) TimeToReady() time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+    if r.status == ReplicaTerminated || r.status == ReplicaStopped || r.status == ReplicaInit {
+        return time.Duration(1<<63 - 1)
+    }
 	return r.cumulativeJobTime + r.setupDuration - time.Since(r.timeStarted)
 }
 
@@ -88,12 +92,16 @@ func (r *Replica) Status() ReplicaStatus {
 	return r.status
 }
 
-func (r *Replica) EnqueueJob(job *Job) {
+func (r *Replica) EnqueueJob(job *Job) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+    if r.status == ReplicaStopped || r.status == ReplicaTerminated {
+        return errors.New(fmt.Sprintf("replica %s is stopped", r.Name))
+    }
 	r.jobQueue <- job
 	r.cumulativeJobTime += job.Duration
 	job.Status = JobPending
+    return nil
 }
 
 func (r *Replica) BeginWork(cli *client.Client, ctx context.Context) error {
@@ -121,7 +129,7 @@ func (r *Replica) BeginWork(cli *client.Client, ctx context.Context) error {
 		job := <-r.jobQueue
 		r.mu.Unlock()
 
-		job.Status = JobRunning
+		job.Start()
 
 		job.Output, err = r.predict(job.Input)
 
@@ -129,7 +137,7 @@ func (r *Replica) BeginWork(cli *client.Client, ctx context.Context) error {
 			job.Status = JobError
 		}
 
-		job.Status = JobDone
+		job.Finish()
 	}
 	r.status = ReplicaStopped
 	r.mu.Unlock()
@@ -160,7 +168,7 @@ func (r *Replica) setup(cli *client.Client, ctx context.Context) error {
 		},
 	}
 
-	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.name)
+	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.Name)
 	if err != nil {
 		return err
 	}
@@ -241,3 +249,25 @@ func (r *Replica) cleanup(cli *client.Client, ctx context.Context) error {
 	err = cli.ContainerRemove(ctx, r.id, types.ContainerRemoveOptions{})
 	return err
 }
+
+func (r *Replica) MonitorReplicaState() {
+    currentStatus := r.Status()
+    for {
+        switch currentStatus {
+        case ReplicaRunning:
+            log.Printf("%s running\n", r.Name)
+        case ReplicaStopped:
+            log.Printf("%s stopped\n", r.Name)
+        case ReplicaError:
+            log.Printf("%s error\n", r.Name)
+        case ReplicaTerminated:
+            log.Printf("%s terminated\n", r.Name)
+            return
+        }
+        prevStatus := currentStatus
+        for currentStatus == prevStatus { 
+            currentStatus = r.Status()
+        }
+    }
+}
+
