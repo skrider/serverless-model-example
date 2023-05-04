@@ -20,7 +20,8 @@ import (
 type ReplicaStatus int
 
 const (
-	ReplicaStarting ReplicaStatus = iota
+	ReplicaCreated ReplicaStatus = iota
+	ReplicaStarting 
 	ReplicaRunning
 	ReplicaIdle
 	ReplicaError
@@ -34,6 +35,9 @@ type Replica struct {
 	timeStarted time.Time
 }
 
+var ReplicaNetworkName string = "serverless-model-example_default"
+var ReplicaImage string = os.Getenv("APP_REPLICA_IMAGE")
+
 type ReplicaRequest struct {
 	input string
 }
@@ -42,54 +46,16 @@ type ReplicaResponse struct {
 	output string
 }
 
-func NewReplica(cli *client.Client, ctx context.Context, index int) (*Replica, error) {
-	replicaImage := os.Getenv("APP_REPLICA_IMAGE")
-	replicaNetworkName := "serverless-model-example_default"
-	if replicaImage == "" {
-		panic("APP_REPLICA_IMAGE environment variable not set")
-	}
-
+func NewReplica(index int) *Replica {
 	containerName := fmt.Sprintf("replica_%d", index)
 
-	containerConfig := &container.Config{
-		Image: replicaImage,
-		ExposedPorts: nat.PortSet{
-			"8000/tcp": struct{}{},
-		},
-	}
-	hostConfig := &container.HostConfig{}
-	networkConfig := &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			replicaNetworkName: {},
-		},
-	}
-
-	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, containerName)
-	if err != nil {
-		return nil, err
-	}
-
-	err = cli.ContainerStart(ctx, containerResponse.ID, types.ContainerStartOptions{})
-	if err != nil {
-		cli.ContainerRemove(ctx, containerResponse.ID, types.ContainerRemoveOptions{})
-		return nil, err
-	}
-
-	containerInfo, err := cli.ContainerInspect(ctx, containerResponse.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	containerIP := containerInfo.NetworkSettings.Networks[replicaNetworkName].IPAddress
 	replica := &Replica{
-		ID:          containerResponse.ID,
 		Name:        containerName,
-		IP:          containerIP,
-		Status:      ReplicaStarting,
+		Status:      ReplicaCreated,
 		timeStarted: time.Now(),
 	}
 
-	return replica, err
+	return replica
 }
 
 func (r *Replica) Ok() (bool, error) {
@@ -106,14 +72,45 @@ func (r *Replica) Ok() (bool, error) {
 	}
 
 	if string(body) == "ok" {
-		r.Status = ReplicaIdle
-		r.timeStarted = time.Now()
 		return true, nil
 	}
 	return false, nil
 }
 
-func (r *Replica) WaitUntilSetup() error {
+func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
+    r.timeStarted = time.Now()
+	containerConfig := &container.Config{
+		Image: ReplicaImage,
+		ExposedPorts: nat.PortSet{
+			"8000/tcp": struct{}{},
+		},
+	}
+	hostConfig := &container.HostConfig{}
+	networkConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			ReplicaNetworkName: {},
+		},
+	}
+
+	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.Name)
+	if err != nil {
+		return err
+	}
+
+	err = cli.ContainerStart(ctx, containerResponse.ID, types.ContainerStartOptions{})
+	if err != nil {
+		cli.ContainerRemove(ctx, containerResponse.ID, types.ContainerRemoveOptions{})
+		return err
+	}
+
+	containerInfo, err := cli.ContainerInspect(ctx, containerResponse.ID)
+	if err != nil {
+		return err
+	}
+
+	r.IP = containerInfo.NetworkSettings.Networks[ReplicaNetworkName].IPAddress
+	r.ID = containerResponse.ID
+
 	for i := 0; i < 100; i++ {
 		ok, _ := r.Ok()
 		time.Sleep(500 * time.Millisecond)
@@ -121,7 +118,8 @@ func (r *Replica) WaitUntilSetup() error {
 			return nil
 		}
 	}
-	return errors.New("replica not ready")
+
+	return errors.New("replica setup failed")
 }
 
 func (r *Replica) TimeToReady() time.Duration {
@@ -132,6 +130,7 @@ func (r *Replica) TimeToReady() time.Duration {
 }
 
 func (r *Replica) Predict(input string) (string, error) {
+    r.timeStarted = time.Now()
 	endpoint := fmt.Sprintf("http://%s:8000", r.IP)
 	reqBody := fmt.Sprintf(`{"input": "%s"}`, input)
 	response, err := http.Post(endpoint, "application/json", strings.NewReader(reqBody))

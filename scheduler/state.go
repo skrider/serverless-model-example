@@ -54,20 +54,30 @@ func (s *State) AddJob(job *Job) {
 
 func (s *State) AddReplica() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
+    index := len(s.replicas)
+
+	replica := NewReplica(index)
+	s.replicas = append(s.replicas, replica)
+
+    s.mu.Unlock()
+
+    go s.SetupReplica(index)
+}
+
+func (s *State) SetupReplica(index int) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		panic(err)
 	}
 	ctx := context.Background()
 
-	replica, err := NewReplica(cli, ctx, len(s.replicas))
-	if err != nil {
-		panic(err)
-	}
+    rep := s.replicas[index]
+    rep.Setup(cli, ctx)
 
-	s.replicas = append(s.replicas, replica)
+    s.mu.Lock()
+    rep.Status = ReplicaIdle
+    s.mu.Unlock()
 }
 
 func (s *State) GetJob(id string) (*Job, error) {
