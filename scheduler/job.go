@@ -23,6 +23,16 @@ type Job struct {
 	end      time.Time
 }
 
+func MakeJob(input string) *Job {
+	return &Job{
+		Input:    input,
+		ID:       UUID(),
+		Status:   JobPending,
+		Duration: DEFAULT_JOB_DURATION,
+		start:    time.Now(),
+	}
+}
+
 func (j *Job) GetStatusString() string {
 	switch j.Status {
 	case JobPending:
@@ -33,11 +43,6 @@ func (j *Job) GetStatusString() string {
 		return "finished"
 	}
 	return "error"
-}
-
-func (j *Job) Start() {
-	j.start = time.Now()
-	j.Status = JobRunning
 }
 
 func (j *Job) Finish() {

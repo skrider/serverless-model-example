@@ -88,18 +88,18 @@ func (r *Replica) Status() ReplicaStatus {
 	return r.status
 }
 
-func (r *Replica) SetStatus(status ReplicaStatus) {
+func (r *Replica) setStatus(status ReplicaStatus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	log.Printf("replica %s status changed from %s to %s", r.Name, r.status.String(), status.String())
+	log.Printf("[%s] status changed from %s to %s", r.Name, r.status.String(), status.String())
 	r.status = status
 }
 
 func (r *Replica) EnqueueJob(job *Job) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.status == ReplicaStopped || r.status == ReplicaTerminated {
-		return errors.New(fmt.Sprintf("replica %s is stopped", r.Name))
+	if r.status == ReplicaStopped || r.status == ReplicaTerminated || r.status == ReplicaError {
+		return errors.New(fmt.Sprintf("replica %s is in bad state %s", r.Name, r.status.String()))
 	}
 	r.jobQueue <- job
 	job.Status = JobPending
@@ -108,14 +108,13 @@ func (r *Replica) EnqueueJob(job *Job) error {
 }
 
 func (r *Replica) Run() error {
+    r.setStatus(ReplicaRunning)
 	var err error
 	for {
 		if len(r.jobQueue) == 0 {
 			return nil
 		}
 		job := <-r.jobQueue
-
-		job.Start()
 
 		job.Output, err = r.predict(job.Input)
 		if err != nil {
@@ -131,6 +130,7 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 	r.mu.Lock()
 	r.timeWhenReady = time.Now().Add(DEFAULT_SETUP_TIME)
 	r.mu.Unlock()
+    r.setStatus(ReplicaStarting)
 
 	containerConfig := &container.Config{
 		Image: replicaImage,
@@ -148,6 +148,7 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 	log.Printf("[%s] creating replica container", r.Name)
 	containerResponse, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkConfig, nil, r.Name)
 	if err != nil {
+        r.setStatus(ReplicaError)
 		return err
 	}
 
@@ -155,12 +156,14 @@ func (r *Replica) Setup(cli *client.Client, ctx context.Context) error {
 	err = cli.ContainerStart(ctx, containerResponse.ID, types.ContainerStartOptions{})
 	if err != nil {
 		cli.ContainerRemove(ctx, containerResponse.ID, types.ContainerRemoveOptions{})
+        r.setStatus(ReplicaError)
 		return err
 	}
 
 	log.Printf("[%s] resolving address", r.Name)
 	containerInfo, err := cli.ContainerInspect(ctx, containerResponse.ID)
 	if err != nil {
+        r.setStatus(ReplicaError)
 		return err
 	}
 
@@ -229,17 +232,25 @@ func (r *Replica) predict(input string) (string, error) {
 }
 
 func (r *Replica) Cleanup(cli *client.Client, ctx context.Context) error {
+    r.setStatus(ReplicaStopped)
     log.Printf("[%s] stopping replica container", r.Name)
 	stopOptions := container.StopOptions{}
 
 	err := cli.ContainerStop(ctx, r.id, stopOptions)
 	if err != nil {
+        r.setStatus(ReplicaError)
 		return err
 	}
 
     log.Printf("[%s] removing replica container", r.Name)
 	err = cli.ContainerRemove(ctx, r.id, types.ContainerRemoveOptions{})
-	return err
+    if err != nil {
+        r.setStatus(ReplicaError)
+        return err
+    }
+
+    r.setStatus(ReplicaTerminated)
+	return nil
 }
 
 func (s ReplicaStatus) String() string {

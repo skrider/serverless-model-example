@@ -22,10 +22,11 @@ var cli *client.Client   // docker client
 var DEFAULT_JOB_DURATION time.Duration
 var DEFAULT_SETUP_TIME time.Duration
 
-func main() {
+func init() {
 	var err error
 
 	// populate constants from environment
+	// have to do it in init() so they are available during testing
 	jobDuration, err := strconv.Atoi(os.Getenv("MODEL_PREDICT_TIME"))
 	if err != nil {
 		panic(err)
@@ -37,6 +38,10 @@ func main() {
 		panic(err)
 	}
 	DEFAULT_SETUP_TIME = time.Duration(setupDuration)*time.Second + DOCKER_OVERHEAD
+}
+
+func main() {
+	var err error
 
 	jobQueue = make(chan *Job, 100)
 	jobs = make(map[string]*Job)
@@ -53,9 +58,9 @@ func main() {
 	// start the background job worker for managing jobs and replicas
 	go backgroundJobWorker()
 
-	log.Print("[main] Listening 8000")
-	log.Printf("[main] Setup time %d", DEFAULT_SETUP_TIME)
-	log.Printf("[main] Handling time %d", DEFAULT_JOB_DURATION)
+	log.Print("[main] Listening on port 8000")
+    log.Printf("[main] Setup time:    %d", DEFAULT_SETUP_TIME)
+    log.Printf("[main] Handling time: %d", DEFAULT_JOB_DURATION)
 
 	http.HandleFunc("/push", pushHandler)
 	http.HandleFunc("/status/", statusHandler)
@@ -107,31 +112,24 @@ func backgroundReplicaWorker(rep *Replica) {
 	var err error
 	ctx := context.Background()
 
-	rep.SetStatus(ReplicaStarting)
 	// start the replica
 	err = rep.Setup(cli, ctx)
 	if err != nil {
-		rep.SetStatus(ReplicaError)
+		rep.setStatus(ReplicaError)
 		panic(err)
 	}
 
-	rep.SetStatus(ReplicaRunning)
 	// run until the job queue has been exhausted
 	err = rep.Run()
 	if err != nil {
-		rep.SetStatus(ReplicaError)
 		panic(err)
 	}
 
-	rep.SetStatus(ReplicaStopped)
 	// clean up the replica
 	err = rep.Cleanup(cli, ctx)
 	if err != nil {
-		rep.SetStatus(ReplicaError)
 		panic(err)
 	}
-
-	rep.SetStatus(ReplicaTerminated)
 }
 
 func pushHandler(w http.ResponseWriter, r *http.Request) {
@@ -154,13 +152,7 @@ func pushHandler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[main] Received job: %v", bodyJson)
 
-	job := &Job{
-		ID:       UUID(),
-		Input:    bodyJson["input"].(string),
-		Status:   JobPending,
-		Duration: DEFAULT_JOB_DURATION,
-	}
-
+	job := MakeJob(bodyJson["input"].(string))
 	jobQueue <- job
 
 	jobs[job.ID] = job

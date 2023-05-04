@@ -18,26 +18,23 @@ func TestStartStopReplica(t *testing.T) {
 
 	rep := NewReplica()
 
-	rep.SetStatus(ReplicaStarting)
 	err = rep.Setup(cli, ctx)
 	if err != nil {
 		t.Error(err)
-		rep.SetStatus(ReplicaError)
 	}
 
-	rep.SetStatus(ReplicaStopped)
 	err = rep.Cleanup(cli, ctx)
 	if err != nil {
 		t.Error(err)
-		rep.SetStatus(ReplicaError)
 	}
 
 	err = rep.ok()
 	if err == nil {
 		t.Error("rep is still ok")
 	}
-
-	rep.SetStatus(ReplicaTerminated)
+    if rep.Status() != ReplicaTerminated {
+        t.Error("rep is not terminated")
+    }
 }
 
 func TestReplicaPredict(t *testing.T) {
@@ -48,44 +45,32 @@ func TestReplicaPredict(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	job := &Job{
-		Input:    "hello",
-		ID:       "1",
-		Output:   "",
-		Status:   JobPending,
-		Duration: time.Second * 2,
-	}
-
+	job := MakeJob("test 1")
 	rep := NewReplica()
 
-	rep.SetStatus(ReplicaStarting)
 	err = rep.Setup(cli, ctx)
 	if err != nil {
-		rep.SetStatus(ReplicaError)
 		panic(err)
 	}
 
 	rep.EnqueueJob(job)
 
-	rep.SetStatus(ReplicaRunning)
 	err = rep.Run()
 	if err != nil {
-		rep.SetStatus(ReplicaError)
 		panic(err)
 	}
 
 	if job.Output == "" {
 		t.Error("job output is empty")
 	}
-
-	rep.SetStatus(ReplicaStopped)
-	err = rep.Cleanup(cli, ctx)
-	if err != nil {
-		rep.SetStatus(ReplicaError)
-		panic(err)
+	if job.Status != JobDone {
+		t.Error("job status is not finished")
 	}
 
-	rep.SetStatus(ReplicaTerminated)
+	err = rep.Cleanup(cli, ctx)
+	if err != nil {
+		panic(err)
+	}
 
 	err = rep.ok()
 	if err == nil {
@@ -100,27 +85,14 @@ func TestReplicaPredictAsync(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	job1 := &Job{
-		Input:    "hello",
-		ID:       "1",
-		Output:   "",
-		Status:   JobPending,
-		Duration: time.Second * 2,
-	}
-	job2 := &Job{
-		Input:    "hello 2",
-		ID:       "2",
-		Output:   "",
-		Status:   JobPending,
-		Duration: time.Second * 2,
-	}
+    job1 := MakeJob("test 3")
+	job2 := MakeJob("test 4")
 
 	rep := NewReplica()
 
-	rep.SetStatus(ReplicaStarting)
 	err = rep.Setup(cli, ctx)
 	if err != nil {
-		rep.SetStatus(ReplicaError)
+		rep.setStatus(ReplicaError)
 		panic(err)
 	}
 	rep.EnqueueJob(job1)
@@ -130,10 +102,8 @@ func TestReplicaPredictAsync(t *testing.T) {
 		rep.EnqueueJob(job2)
 	}()
 
-	rep.SetStatus(ReplicaRunning)
 	err = rep.Run()
 	if err != nil {
-		rep.SetStatus(ReplicaError)
 		panic(err)
 	}
 
@@ -144,14 +114,10 @@ func TestReplicaPredictAsync(t *testing.T) {
 		t.Error("job 2 output is empty")
 	}
 
-	rep.SetStatus(ReplicaStopped)
 	err = rep.Cleanup(cli, ctx)
 	if err != nil {
-		rep.SetStatus(ReplicaError)
 		panic(err)
 	}
-
-	rep.SetStatus(ReplicaTerminated)
 
 	err = rep.ok()
 	if err == nil {
