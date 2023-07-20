@@ -1,7 +1,5 @@
 # Serverless Model-As-A-Service Example
 
-This repo contains my submission for the technical take-home interview for Sieve Data.
-
 How to run:
 
 ```sh
